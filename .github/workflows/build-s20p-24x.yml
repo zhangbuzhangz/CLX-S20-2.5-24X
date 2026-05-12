@@ -109,4 +109,4 @@ jobs:
         with:
           name: clx-s20p-immortalwrt-24x
           path: |
-  openwrt/bin/targets/mediatek/filogic/*
+            openwrt/bin/targets/mediatek/filogic/*
