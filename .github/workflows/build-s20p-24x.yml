@@ -19,16 +19,58 @@ jobs:
         run: |
           git clone --depth=1 -b openwrt-24.10 https://github.com/immortalwrt/immortalwrt.git openwrt
 
+      - name: Clone S20P source
+        run: |
+          git clone --depth=1 -b v7672 https://github.com/lgs2007m/immortalwrt-mt798x.git s20p-src
+
+      - name: Port CLX S20P DTS and profile
+        run: |
+          echo "===== Find S20P files in old source ====="
+          find s20p-src/target/linux/mediatek -iname "*s20p*" -o -iname "*clx*"
+
+          echo "===== Copy DTS/DTSI ====="
+          mkdir -p openwrt/target/linux/mediatek/dts
+          cp -av s20p-src/target/linux/mediatek/dts/*s20p* openwrt/target/linux/mediatek/dts/ 2>/dev/null || true
+          cp -av s20p-src/target/linux/mediatek/dts/*clx* openwrt/target/linux/mediatek/dts/ 2>/dev/null || true
+
+          echo "===== Patch image Makefile ====="
+          grep -Rni "clx_s20p\|s20p" s20p-src/target/linux/mediatek/image || true
+
+          OLD_IMAGE="$(grep -Ril "clx_s20p\|s20p" s20p-src/target/linux/mediatek/image | head -n1)"
+          NEW_IMAGE="openwrt/target/linux/mediatek/image/filogic.mk"
+
+          echo "OLD_IMAGE=$OLD_IMAGE"
+          echo "NEW_IMAGE=$NEW_IMAGE"
+
+          if [ -n "$OLD_IMAGE" ]; then
+            sed -n '/define Device.*clx_s20p/,/endef/p' "$OLD_IMAGE" >> /tmp/s20p-device.txt || true
+            sed -n '/define Device.*s20p/,/endef/p' "$OLD_IMAGE" >> /tmp/s20p-device.txt || true
+            cat /tmp/s20p-device.txt
+
+            if [ -s /tmp/s20p-device.txt ]; then
+              cat >> "$NEW_IMAGE" <<'EOF'
+
+# ===== CLX S20P ported from lgs2007m/immortalwrt-mt798x =====
+EOF
+              cat /tmp/s20p-device.txt >> "$NEW_IMAGE"
+            fi
+          fi
+
+          echo "===== Check final S20P profile ====="
+          grep -Rni "clx_s20p\|s20p" openwrt/target/linux/mediatek/image openwrt/target/linux/mediatek/dts || true
+
+      - name: Add iStore feeds
+        working-directory: openwrt
+        run: |
+          cat >> feeds.conf.default <<'EOF'
+          src-git istore https://github.com/linkease/istore;main
+          EOF
+
       - name: Update feeds
         working-directory: openwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
-      - name: Check CLX S20P target
-        working-directory: openwrt
-        run: |
-          grep -Rni "clx_s20p\|s20p\|CLX S20P" target/linux/mediatek || true
 
       - name: Generate S20P config
         working-directory: openwrt
@@ -61,12 +103,13 @@ jobs:
           CONFIG_PACKAGE_luci-app-ttyd=y
           CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
 
-          CONFIG_PACKAGE_luci-app-ddns=y
-          CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y
-          CONFIG_PACKAGE_luci-app-upnp=y
-          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
-          CONFIG_PACKAGE_luci-app-wol=y
-          CONFIG_PACKAGE_luci-i18n-wol-zh-cn=y
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_openssh-sftp-server=y
+          CONFIG_PACKAGE_tcpdump=y
+          CONFIG_PACKAGE_ethtool=y
 
           CONFIG_PACKAGE_kmod-usb3=y
           CONFIG_PACKAGE_kmod-fs-ext4=y
@@ -76,21 +119,13 @@ jobs:
           CONFIG_PACKAGE_lsblk=y
           CONFIG_PACKAGE_mmc-utils=y
 
-          CONFIG_PACKAGE_bash=y
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_nano=y
-          CONFIG_PACKAGE_openssh-sftp-server=y
-          CONFIG_PACKAGE_tcpdump=y
-          CONFIG_PACKAGE_ethtool=y
-
-          # Fix libustream conflict: use mbedtls only
+          # Fix libustream conflict
           CONFIG_PACKAGE_libustream-mbedtls=y
           # CONFIG_PACKAGE_libustream-openssl is not set
           # CONFIG_PACKAGE_libustream-wolfssl is not set
+          # CONFIG_PACKAGE_luci-ssl is not set
           # CONFIG_PACKAGE_luci-ssl-openssl is not set
           # CONFIG_PACKAGE_luci-ssl-nginx is not set
-          # CONFIG_PACKAGE_luci-ssl is not set
 
           # Disable WiFi
           # CONFIG_PACKAGE_wpad-basic-mbedtls is not set
