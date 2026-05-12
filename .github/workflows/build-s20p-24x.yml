@@ -1,0 +1,74 @@
+name: Build S20P ImmortalWrt 24X
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential clang flex bison g++ gawk \
+          gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
+          python3 python3-setuptools rsync unzip zlib1g-dev file wget curl ccache
+
+      - name: Clone ImmortalWrt 24.10
+        run: |
+          git clone --depth=1 -b openwrt-24.10 https://github.com/immortalwrt/immortalwrt.git openwrt
+
+      - name: Update feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Search CLX S20P target
+        working-directory: openwrt
+        run: |
+          grep -Rni "s20p\|clx" target/linux/mediatek || true
+          grep -Rni "clx_s20p\|s20p" target/linux/mediatek/image || true
+
+      - name: Generate config
+        working-directory: openwrt
+        run: |
+          cat > .config <<'EOF'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl=y
+          CONFIG_PACKAGE_luci-compat=y
+
+          CONFIG_PACKAGE_luci-app-store=y
+          CONFIG_PACKAGE_luci-lib-taskd=y
+          CONFIG_PACKAGE_luci-lib-xterm=y
+
+          CONFIG_PACKAGE_luci-app-dockerman=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
+
+          # Disable WiFi
+          CONFIG_PACKAGE_wpad-basic-mbedtls=n
+          CONFIG_PACKAGE_wpad-openssl=n
+          CONFIG_PACKAGE_wpad=n
+          CONFIG_PACKAGE_hostapd=n
+          CONFIG_PACKAGE_iw=n
+          CONFIG_PACKAGE_iwinfo=n
+          CONFIG_PACKAGE_wireless-regdb=n
+          EOF
+
+          make defconfig
+
+      - name: Build firmware
+        working-directory: openwrt
+        run: |
+          make download -j8
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: s20p-immortalwrt-24x
+          path: openwrt/bin/targets/
