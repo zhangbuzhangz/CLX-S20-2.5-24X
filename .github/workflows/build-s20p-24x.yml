@@ -1,62 +1,133 @@
-name: Build CLX S20P ImmortalWrt 24X
+name: Build CLX S20P ImmortalWrt 24.10
 
 on:
   workflow_dispatch:
 
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
+  REPO_BRANCH: openwrt-24.10
+  S20P_SRC_URL: https://github.com/lgs2007m/immortalwrt-mt798x.git
+  S20P_SRC_BRANCH: v7672
+  TZ: Asia/Shanghai
+
 jobs:
   build:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: false
+          dotnet: false
+          haskell: false
+          large-packages: false
+          swap-storage: false
+
       - name: Install dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt update
-          sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-setuptools rsync unzip zlib1g-dev file wget curl ccache
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo -E apt-get -yqq update
+          sudo -E apt-get -yqq install ca-certificates curl file git rsync unzip wget
+          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo -E apt-get -yqq autoremove --purge
+          sudo -E apt-get -yqq clean
 
       - name: Clone ImmortalWrt 24.10
         run: |
-          git clone --depth=1 -b openwrt-24.10 https://github.com/immortalwrt/immortalwrt.git openwrt
+          git clone --depth=1 -b "$REPO_BRANCH" "$REPO_URL" openwrt
 
-      - name: Clone S20P source
+      - name: Clone known-good S20P source
         run: |
-          git clone --depth=1 -b v7672 https://github.com/lgs2007m/immortalwrt-mt798x.git s20p-src
+          git clone --depth=1 -b "$S20P_SRC_BRANCH" "$S20P_SRC_URL" s20p-src
 
-      - name: Port CLX S20P DTS and profile
+      - name: Port CLX S20P DTS and image profiles
         run: |
-          find s20p-src/target/linux/mediatek -iname "*s20p*" -o -iname "*clx*"
-          mkdir -p openwrt/target/linux/mediatek/dts
-          cp -av s20p-src/target/linux/mediatek/dts/*s20p* openwrt/target/linux/mediatek/dts/ 2>/dev/null || true
-          cp -av s20p-src/target/linux/mediatek/dts/*clx* openwrt/target/linux/mediatek/dts/ 2>/dev/null || true
+          set -euxo pipefail
 
-          OLD_IMAGE="$(grep -Ril "clx_s20p\|s20p" s20p-src/target/linux/mediatek/image | head -n1)"
-          NEW_IMAGE="openwrt/target/linux/mediatek/image/filogic.mk"
+          old_mediatek="s20p-src/target/linux/mediatek"
+          new_mediatek="openwrt/target/linux/mediatek"
+          new_dts_dir="$new_mediatek/dts"
+          new_image="$new_mediatek/image/filogic.mk"
 
-          if [ -n "$OLD_IMAGE" ]; then
-            sed -n '/define Device.*clx_s20p/,/endef/p' "$OLD_IMAGE" >> /tmp/s20p-device.txt || true
-            sed -n '/define Device.*s20p/,/endef/p' "$OLD_IMAGE" >> /tmp/s20p-device.txt || true
-            if [ -s /tmp/s20p-device.txt ]; then
-              echo "" >> "$NEW_IMAGE"
-              echo "# CLX S20P ported profile" >> "$NEW_IMAGE"
-              cat /tmp/s20p-device.txt >> "$NEW_IMAGE"
-            fi
+          test -d "$old_mediatek"
+          test -f "$new_image"
+          mkdir -p "$new_dts_dir"
+
+          mapfile -t dts_files < <(find "$old_mediatek" -type f \( -iname '*s20p*.dts' -o -iname '*s20p*.dtsi' -o -iname '*clx*.dts' -o -iname '*clx*.dtsi' \) | sort)
+          if [ "${#dts_files[@]}" -eq 0 ]; then
+            echo "::error::No CLX S20P DTS/DTSI files found in $old_mediatek"
+            exit 1
           fi
 
-          grep -Rni "clx_s20p\|s20p" openwrt/target/linux/mediatek/image openwrt/target/linux/mediatek/dts || true
+          for src in "${dts_files[@]}"; do
+            dst="$new_dts_dir/$(basename "$src")"
+            cp -v "$src" "$dst"
+            sed -i \
+              -e 's/#include "mt7986a\.dtsi"/#include "mt7986a.dtsi"/g' \
+              -e 's/#include "mt7986\.dtsi"/#include "mt7986a.dtsi"/g' \
+              "$dst"
+          done
 
-      - name: Add iStore feeds
+          old_image="$(grep -RilE 'define Device/.*clx_s20p|define Device/.*s20p|DEVICE_.*clx_s20p|DEVICE_.*s20p' "$old_mediatek/image" | head -n1 || true)"
+          if [ -z "$old_image" ]; then
+            echo "::error::No CLX S20P image profile found in $old_mediatek/image"
+            exit 1
+          fi
+
+          awk '
+            BEGIN { capture = 0 }
+            /^define Device\/.*(clx_s20p|s20p)/ { capture = 1 }
+            capture { print }
+            capture && /^endef/ { print ""; capture = 0 }
+          ' "$old_image" > /tmp/clx-s20p-profiles.mk
+
+          if ! grep -q 'define Device/.*clx_s20p' /tmp/clx-s20p-profiles.mk; then
+            echo "::error::Failed to extract CLX S20P image profiles from $old_image"
+            exit 1
+          fi
+
+          sed -i \
+            -e 's/DEVICE_DTS_DIR := .*/DEVICE_DTS_DIR := ..\/dts/g' \
+            -e 's/\bmt7986\b/filogic/g' \
+            -e 's/TARGET_mediatek_mt7986/TARGET_mediatek_filogic/g' \
+            -e 's/DEVICE_PACKAGES :=/DEVICE_PACKAGES +=/g' \
+            /tmp/clx-s20p-profiles.mk
+
+          {
+            echo ''
+            echo '# CLX S20P ported from lgs2007m/immortalwrt-mt798x v7672'
+            cat /tmp/clx-s20p-profiles.mk
+          } >> "$new_image"
+
+          grep -RniE 'clx_s20p|s20p' "$new_image" "$new_dts_dir"
+
+      - name: Add iStore feed
         working-directory: openwrt
         run: |
-          echo "src-git istore https://github.com/linkease/istore;main" >> feeds.conf.default
+          cat >> feeds.conf.default <<'EOF'
+          src-git istore https://github.com/linkease/istore;main
+          EOF
 
       - name: Update feeds
         working-directory: openwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          ./scripts/feeds install -p istore istore-ui luci-app-store || true
 
-      - name: Generate S20P config
+      - name: Generate CLX S20P config
         working-directory: openwrt
         run: |
+          set -euxo pipefail
           cat > .config <<'EOF'
           CONFIG_TARGET_mediatek=y
           CONFIG_TARGET_mediatek_filogic=y
@@ -71,17 +142,22 @@ jobs:
           CONFIG_PACKAGE_luci-compat=y
           CONFIG_PACKAGE_luci-app-opkg=y
           CONFIG_PACKAGE_luci-app-store=y
+          CONFIG_PACKAGE_istore-ui=y
           CONFIG_PACKAGE_luci-lib-taskd=y
           CONFIG_PACKAGE_luci-lib-xterm=y
 
           CONFIG_PACKAGE_luci-app-dockerman=y
           CONFIG_PACKAGE_luci-app-ttyd=y
 
-          CONFIG_PACKAGE_libustream-mbedtls=y
-          # CONFIG_PACKAGE_libustream-openssl is not set
-          # CONFIG_PACKAGE_libustream-wolfssl is not set
-          # CONFIG_PACKAGE_luci-ssl is not set
+          CONFIG_PACKAGE_lua-cjson=y
+          CONFIG_PACKAGE_kmod-fs-ext4=y
+          CONFIG_PACKAGE_kmod-fs-f2fs=y
+          CONFIG_PACKAGE_kmod-fuse=y
+          CONFIG_PACKAGE_kmod-veth=y
+          CONFIG_PACKAGE_kmod-br-netfilter=y
+          CONFIG_PACKAGE_kmod-nf-ipvs=y
 
+          # Keep Wi-Fi disabled by default and do not pull hostapd/wpad.
           # CONFIG_PACKAGE_wpad-basic-mbedtls is not set
           # CONFIG_PACKAGE_wpad-openssl is not set
           # CONFIG_PACKAGE_wpad is not set
@@ -89,24 +165,51 @@ jobs:
           # CONFIG_PACKAGE_iw is not set
           # CONFIG_PACKAGE_iwinfo is not set
           # CONFIG_PACKAGE_wireless-regdb is not set
+          # CONFIG_PACKAGE_luci-app-mtwifi-cfg is not set
+          # CONFIG_PACKAGE_luci-i18n-mtwifi-cfg-zh-cn is not set
+          # CONFIG_PACKAGE_mtwifi-cfg is not set
           EOF
 
           make defconfig
-          grep -E "CONFIG_TARGET_DEVICE_.*s20p|libustream|luci-ssl" .config || true
+
+          grep -q '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_clx_s20p-dsa=y' .config
+          grep -q '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_clx_s20p-gsw=y' .config
+          grep -q '^CONFIG_PACKAGE_istore-ui=y' .config
+          grep -q '^CONFIG_PACKAGE_luci-app-dockerman=y' .config
+          grep -q '^CONFIG_PACKAGE_luci-app-ttyd=y' .config
+          grep -q '^# CONFIG_PACKAGE_wpad-basic-mbedtls is not set' .config
 
       - name: Download packages
         working-directory: openwrt
         run: |
-          make download -j8
+          make download -j"$(nproc)"
+          find dl -size -1024c -print -delete
 
       - name: Build firmware
         working-directory: openwrt
         run: |
-          make -j$(nproc) || make -j1 V=s
+          make -j"$(nproc)" || make -j1 V=s
+
+      - name: Verify sysupgrade output
+        working-directory: openwrt
+        run: |
+          set -euxo pipefail
+          target_dir="bin/targets/mediatek/filogic"
+          test -d "$target_dir"
+          find "$target_dir" -maxdepth 1 -type f -name '*.bin' -printf '%p %s bytes\n' | sort
+
+          dsa_count="$(find "$target_dir" -maxdepth 1 -type f -name '*clx_s20p-dsa*sysupgrade*.bin' | wc -l)"
+          gsw_count="$(find "$target_dir" -maxdepth 1 -type f -name '*clx_s20p-gsw*sysupgrade*.bin' | wc -l)"
+          if [ "$dsa_count" -eq 0 ] || [ "$gsw_count" -eq 0 ]; then
+            echo "::error::Missing real CLX S20P sysupgrade.bin output in $target_dir"
+            exit 1
+          fi
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: clx-s20p-immortalwrt-24x
+          name: clx-s20p-immortalwrt-24.10
+          if-no-files-found: error
           path: |
-            openwrt/bin/targets/mediatek/filogic/*
+            openwrt/bin/targets/mediatek/filogic/*clx_s20p*.bin
+            openwrt/bin/targets/mediatek/filogic/sha256sums
