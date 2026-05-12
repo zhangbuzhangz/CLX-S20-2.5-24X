@@ -1,4 +1,4 @@
-name: Build S20P ImmortalWrt 24X
+name: Build CLX S20P ImmortalWrt 24X
 
 on:
   workflow_dispatch:
@@ -25,50 +25,104 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Search CLX S20P target
+      - name: Check CLX S20P target
         working-directory: openwrt
         run: |
-          grep -Rni "s20p\|clx" target/linux/mediatek || true
-          grep -Rni "clx_s20p\|s20p" target/linux/mediatek/image || true
+          grep -Rni "clx_s20p\|s20p\|CLX S20P" target/linux/mediatek || true
 
-      - name: Generate config
+      - name: Generate S20P config
         working-directory: openwrt
         run: |
           cat > .config <<'EOF'
           CONFIG_TARGET_mediatek=y
           CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_MULTI_PROFILE=y
+
+          CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_clx_s20p-dsa=y
+          CONFIG_TARGET_DEVICE_PACKAGES_mediatek_filogic_DEVICE_clx_s20p-dsa=""
+
+          CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_clx_s20p-gsw=y
+          CONFIG_TARGET_DEVICE_PACKAGES_mediatek_filogic_DEVICE_clx_s20p-gsw=""
+
+          CONFIG_TARGET_PER_DEVICE_ROOTFS=y
 
           CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl=y
           CONFIG_PACKAGE_luci-compat=y
+          CONFIG_PACKAGE_luci-app-opkg=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
 
           CONFIG_PACKAGE_luci-app-store=y
           CONFIG_PACKAGE_luci-lib-taskd=y
           CONFIG_PACKAGE_luci-lib-xterm=y
 
           CONFIG_PACKAGE_luci-app-dockerman=y
+          CONFIG_PACKAGE_luci-i18n-dockerman-zh-cn=y
           CONFIG_PACKAGE_luci-app-ttyd=y
+          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
+
+          CONFIG_PACKAGE_luci-app-ddns=y
+          CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
+          CONFIG_PACKAGE_luci-app-wol=y
+          CONFIG_PACKAGE_luci-i18n-wol-zh-cn=y
+
+          CONFIG_PACKAGE_kmod-usb3=y
+          CONFIG_PACKAGE_kmod-fs-ext4=y
+          CONFIG_PACKAGE_kmod-fs-f2fs=y
+          CONFIG_PACKAGE_e2fsprogs=y
+          CONFIG_PACKAGE_f2fs-tools=y
+          CONFIG_PACKAGE_lsblk=y
+          CONFIG_PACKAGE_mmc-utils=y
+
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_openssh-sftp-server=y
+          CONFIG_PACKAGE_tcpdump=y
+          CONFIG_PACKAGE_ethtool=y
+
+          # Fix libustream conflict: use mbedtls only
+          CONFIG_PACKAGE_libustream-mbedtls=y
+          # CONFIG_PACKAGE_libustream-openssl is not set
+          # CONFIG_PACKAGE_libustream-wolfssl is not set
+          # CONFIG_PACKAGE_luci-ssl-openssl is not set
+          # CONFIG_PACKAGE_luci-ssl-nginx is not set
+          # CONFIG_PACKAGE_luci-ssl is not set
 
           # Disable WiFi
-          CONFIG_PACKAGE_wpad-basic-mbedtls=n
-          CONFIG_PACKAGE_wpad-openssl=n
-          CONFIG_PACKAGE_wpad=n
-          CONFIG_PACKAGE_hostapd=n
-          CONFIG_PACKAGE_iw=n
-          CONFIG_PACKAGE_iwinfo=n
-          CONFIG_PACKAGE_wireless-regdb=n
+          # CONFIG_PACKAGE_wpad-basic-mbedtls is not set
+          # CONFIG_PACKAGE_wpad-openssl is not set
+          # CONFIG_PACKAGE_wpad is not set
+          # CONFIG_PACKAGE_hostapd is not set
+          # CONFIG_PACKAGE_iw is not set
+          # CONFIG_PACKAGE_iwinfo is not set
+          # CONFIG_PACKAGE_wireless-regdb is not set
+          # CONFIG_PACKAGE_wireless-tools is not set
           EOF
 
           make defconfig
 
-      - name: Build firmware
+          echo "===== Final S20P target check ====="
+          grep -E "CONFIG_TARGET_DEVICE_.*s20p|CONFIG_TARGET_MULTI_PROFILE|CONFIG_TARGET_PER_DEVICE_ROOTFS" .config || true
+
+          echo "===== libustream check ====="
+          grep -E "libustream|luci-ssl" .config || true
+
+      - name: Download packages
         working-directory: openwrt
         run: |
           make download -j8
+
+      - name: Build firmware
+        working-directory: openwrt
+        run: |
           make -j$(nproc) || make -j1 V=s
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: s20p-immortalwrt-24x
+          name: clx-s20p-immortalwrt-24x
           path: openwrt/bin/targets/
