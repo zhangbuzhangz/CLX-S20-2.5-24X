@@ -93,7 +93,22 @@ jobs:
             if ! grep -q 'pcie_pins: pcie-pins' "$dst"; then
               perl -0pi -e 's/&pio \{/&pio {\n\tpcie_pins: pcie-pins {\n\t\tmux {\n\t\t\tfunction = "pcie";\n\t\t\tgroups = "pcie_clk", "pcie_wake", "pcie_pereset";\n\t\t};\n\t};\n/s' "$dst"
             fi
+
+            # The old 5.4 vendor tree reset the two RTL8221B PHYs through
+            # ext-phy-reset-gpios on the MAC nodes. Kernel 6.6 consumes the
+            # standard MDIO PHY reset binding instead, so mirror the same
+            # GPIOs onto phy@5/phy@7 while keeping the old MAC properties.
+            perl -0pi -e 's/(reg_1p8v:\s*regulator-1p8v\s*\{(?![^}]*regulator-always-on;)[^}]*regulator-boot-on;\r?\n)/$1\t\tregulator-always-on;\n/s' "$dst"
+            perl -0pi -e 's/(reg_3p3v:\s*regulator-3p3v\s*\{(?![^}]*regulator-always-on;)[^}]*regulator-boot-on;\r?\n)/$1\t\tregulator-always-on;\n/s' "$dst"
+            perl -0pi -e 's/(phy5:\s*phy\@5\s*\{(?![^}]*reset-gpios)[^}]*reg = <5>;\s*\r?\n)(\s*\};)/$1\t\t\tphy-mode = "2500base-x";\n\t\t\treset-gpios = <&pio 48 GPIO_ACTIVE_HIGH>;\n\t\t\treset-assert-us = <100000>;\n\t\t\treset-deassert-us = <100000>;\n$2/s' "$dst"
+            perl -0pi -e 's/(phy7:\s*phy\@7\s*\{(?![^}]*reset-gpios)[^}]*reg = <7>;\s*\r?\n)(\s*\};)/$1\t\t\tphy-mode = "2500base-x";\n\t\t\treset-gpios = <&pio 6 GPIO_ACTIVE_HIGH>;\n\t\t\treset-assert-us = <100000>;\n\t\t\treset-deassert-us = <100000>;\n$2/s' "$dst"
           done
+
+          grep -RniE 'phy[57]: phy@[57]|ext-phy-reset-gpios|reset-gpios = <&pio (48|6) GPIO_ACTIVE_HIGH>|regulator-always-on' "$new_dts_dir"
+          grep -Rq 'ext-phy-reset-gpios = <&pio 48 GPIO_ACTIVE_HIGH>;' "$new_dts_dir"
+          grep -Rq 'ext-phy-reset-gpios = <&pio 6 GPIO_ACTIVE_HIGH>;' "$new_dts_dir"
+          grep -Rq '^[[:space:]]*reset-gpios = <&pio 48 GPIO_ACTIVE_HIGH>;' "$new_dts_dir"
+          grep -Rq '^[[:space:]]*reset-gpios = <&pio 6 GPIO_ACTIVE_HIGH>;' "$new_dts_dir"
 
           old_image="$(grep -RilE 'define Device/.*clx_s20p|define Device/.*s20p|DEVICE_.*clx_s20p|DEVICE_.*s20p' "$old_mediatek/image" | head -n1 || true)"
           if [ -z "$old_image" ]; then
