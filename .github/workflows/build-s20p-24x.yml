@@ -353,7 +353,7 @@ jobs:
             -e '/mtk_hnat\/nf_hnat_mtk.h/d' \
             "$mtk_dir/mtk_eth_rtl822x.c"
 
-          perl -0pi -e 's/(#include "rtl822x\/nic_rtl8226b_init.h"\n)/$1\n#ifndef MII_MMD_ACC_CTL_REG\n#define MII_MMD_ACC_CTL_REG 0x0d\n#endif\n#ifndef MII_MMD_ADDR_DATA_REG\n#define MII_MMD_ADDR_DATA_REG 0x0e\n#endif\n#ifndef MMD_OP_MODE_DATA\n#define MMD_OP_MODE_DATA BIT(14)\n#endif\n\nstruct mtk_extphy_id {\n\tu32 phy_id;\n\tu32 phy_id_mask;\n\tu32 is_c45;\n\tint (*init)(struct mtk_eth *, int addr);\n};\n/s' "$mtk_dir/mtk_eth_rtl822x.c"
+          perl -0pi -e 's/(#include "rtl822x\/nic_rtl8226b_init.h"\n)/$1\n#ifndef MII_MMD_ACC_CTL_REG\n#define MII_MMD_ACC_CTL_REG 0x0d\n#endif\n#ifndef MII_MMD_ADDR_DATA_REG\n#define MII_MMD_ADDR_DATA_REG 0x0e\n#endif\n#ifndef MMD_OP_MODE_DATA\n#define MMD_OP_MODE_DATA BIT(14)\n#endif\n\nstruct mtk_extphy_id {\n\tu32 phy_id;\n\tu32 phy_id_mask;\n\tu32 is_c45;\n\tint (*init)(struct mtk_eth *, int addr);\n};\n\nstatic int _mtk_mdio_read(struct mtk_eth *eth, u32 phy_addr, u32 phy_reg)\n{\n\treturn eth->mii_bus->read(eth->mii_bus, phy_addr, phy_reg);\n}\n\nstatic int _mtk_mdio_write(struct mtk_eth *eth, u32 phy_addr, u32 phy_reg,\n\t\t\t\t   u32 write_data)\n{\n\treturn eth->mii_bus->write(eth->mii_bus, phy_addr, phy_reg, write_data);\n}\n/s' "$mtk_dir/mtk_eth_rtl822x.c"
 
           perl -0pi -e 's/(#include <linux\/of_mdio.h>\n)/$1#include <linux\/gpio.h>\n#include <linux\/of_gpio.h>\n/s' "$mtk_dir/mtk_eth_soc.c"
           if ! grep -q 'mtk_soc_extphy_init' "$mtk_dir/mtk_eth_soc.c"; then
@@ -361,7 +361,7 @@ jobs:
           fi
 
           if ! grep -q 'clx_ext_reset_pin' "$mtk_dir/mtk_eth_soc.c"; then
-            perl -0pi -e 's/(err = mtk_add_mac\(eth, mac_np\);\n\s*if \(err\) \{\n\s*of_node_put\(mac_np\);\n\s*goto err_deinit_hw;\n\s*\}\n)/$1\n\t\t{\n\t\t\tint clx_ext_reset_pin;\n\t\t\tint clx_reset_ret;\n\n\t\t\tclx_ext_reset_pin = of_get_named_gpio(mac_np, "ext-phy-reset-gpios", 0);\n\t\t\tif (gpio_is_valid(clx_ext_reset_pin)) {\n\t\t\t\tdev_info(&pdev->dev, "CLX ext-phy reset gpio: %d\\n", clx_ext_reset_pin);\n\t\t\t\tclx_reset_ret = devm_gpio_request(&pdev->dev, clx_ext_reset_pin,\n\t\t\t\t\t\t\t\t "clx-ext-phy-reset");\n\t\t\t\tif (!clx_reset_ret) {\n\t\t\t\t\tgpio_direction_output(clx_ext_reset_pin, 0);\n\t\t\t\t\tmsleep(300);\n\t\t\t\t\tgpio_set_value(clx_ext_reset_pin, 1);\n\t\t\t\t\tmsleep(500);\n\t\t\t\t\tdevm_gpio_free(&pdev->dev, clx_ext_reset_pin);\n\t\t\t\t} else {\n\t\t\t\t\tdev_info(&pdev->dev, "CLX ext-phy reset gpio already requested: %d\\n", clx_reset_ret);\n\t\t\t\t}\n\t\t\t}\n\t\t}\n/s' "$mtk_dir/mtk_eth_soc.c"
+            perl -0pi -e 's/(err = mtk_add_mac\(eth, mac_np\);\n\s*if \(err\) \{\n\s*of_node_put\(mac_np\);\n\s*goto err_deinit_hw;\n\s*\}\n)/$1\n\t\t{\n\t\t\tint clx_ext_reset_pin;\n\t\t\tint clx_reset_ret;\n\n\t\t\tclx_ext_reset_pin = of_get_named_gpio(mac_np, "ext-phy-reset-gpios", 0);\n\t\t\tif (gpio_is_valid(clx_ext_reset_pin)) {\n\t\t\t\tdev_info(&pdev->dev, "CLX ext-phy reset gpio: %d\\n", clx_ext_reset_pin);\n\t\t\t\tclx_reset_ret = gpio_request(clx_ext_reset_pin, "clx-ext-phy-reset");\n\t\t\t\tif (!clx_reset_ret) {\n\t\t\t\t\tgpio_direction_output(clx_ext_reset_pin, 0);\n\t\t\t\t\tmsleep(300);\n\t\t\t\t\tgpio_set_value(clx_ext_reset_pin, 1);\n\t\t\t\t\tmsleep(500);\n\t\t\t\t\tgpio_free(clx_ext_reset_pin);\n\t\t\t\t} else {\n\t\t\t\t\tdev_info(&pdev->dev, "CLX ext-phy reset gpio already requested: %d\\n", clx_reset_ret);\n\t\t\t\t}\n\t\t\t}\n\t\t}\n/s' "$mtk_dir/mtk_eth_soc.c"
           fi
 
           if ! grep -q 'clx_ext_phy_reg' "$mtk_dir/mtk_eth_soc.c"; then
@@ -369,14 +369,16 @@ jobs:
           fi
 
           if ! grep -q 'mtk_eth_rtl822x.c' "$mtk_dir/mtk_eth_soc.c"; then
-            perl -0pi -e 's/\nMODULE_AUTHOR/\n#include "rtl822x\/rtl_adapter.c"\n#include "rtl822x\/nic_rtl8226b_init.c"\n#include "mtk_eth_rtl822x.c"\n\nMODULE_AUTHOR/s' "$mtk_dir/mtk_eth_soc.c"
+            perl -0pi -e 's/\nMODULE_AUTHOR/\n#include "mtk_eth_rtl822x.c"\n#include "rtl822x\/rtl_adapter.c"\n#include "rtl822x\/nic_rtl8226b_init.c"\n\nMODULE_AUTHOR/s' "$mtk_dir/mtk_eth_soc.c"
           fi
 
           grep -q 'clx_ext_reset_pin' "$mtk_dir/mtk_eth_soc.c"
           grep -q 'clx_ext_phy_reg' "$mtk_dir/mtk_eth_soc.c"
+          grep -q 'gpio_free(clx_ext_reset_pin)' "$mtk_dir/mtk_eth_soc.c"
           grep -q 'rtl822x/rtl_adapter.c' "$mtk_dir/mtk_eth_soc.c"
           grep -q 'rtl822x/nic_rtl8226b_init.c' "$mtk_dir/mtk_eth_soc.c"
           grep -q 'mtk_eth_rtl822x.c' "$mtk_dir/mtk_eth_soc.c"
+          grep -q '_mtk_mdio_read' "$mtk_dir/mtk_eth_rtl822x.c"
           grep -n 'CLX ext-phy\|mtk_eth_rtl822x.c\|mtk_soc_extphy_init' "$mtk_dir/mtk_eth_soc.c"
           grep -n 'Rtl8226b_phy_init\|RTL822x init success' "$mtk_dir/mtk_eth_rtl822x.c"
 
