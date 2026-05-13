@@ -91,14 +91,7 @@ jobs:
             perl -0pi -e 's/(&pcie\s*\{.*?\n\};)/$1\n\n&pcie_phy {\n\tstatus = "okay";\n};/s' "$dst"
             perl -0pi -e 's/(&ssusb\s*\{.*?\n\};)/$1\n\n&usb_phy {\n\tstatus = "okay";\n};/s' "$dst"
             if ! grep -q 'pcie_pins: pcie-pins' "$dst"; then
-              sed -i '/&pio {/a\
-\tpcie_pins: pcie-pins {\
-\t\tmux {\
-\t\t\tfunction = "pcie";\
-\t\t\tgroups = "pcie_clk", "pcie_wake", "pcie_pereset";\
-\t\t};\
-\t};\
-' "$dst"
+              perl -0pi -e 's/&pio \{/&pio {\n\tpcie_pins: pcie-pins {\n\t\tmux {\n\t\t\tfunction = "pcie";\n\t\t\tgroups = "pcie_clk", "pcie_wake", "pcie_pereset";\n\t\t};\n\t};\n/s' "$dst"
             fi
           done
 
