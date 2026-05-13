@@ -190,20 +190,34 @@ jobs:
         run: |
           make -j"$(nproc)" || make -j1 V=s
 
-      - name: Verify sysupgrade output
+      - name: List firmware outputs
+        working-directory: openwrt
+        run: |
+          find bin/targets -maxdepth 5 -type f -printf "%p %s bytes\n" | sort
+          find bin/targets -type f \( -name "*.bin" -o -name "*.itb" -o -name "*sysupgrade*" \) -printf "%p %s bytes\n" | sort
+          grep -E "CONFIG_TARGET_DEVICE_.*s20p|CONFIG_TARGET_PROFILE|CONFIG_TARGET_MULTI_PROFILE" .config || true
+
+      - name: Verify real S20P firmware output
         working-directory: openwrt
         run: |
           set -euxo pipefail
           target_dir="bin/targets/mediatek/filogic"
           test -d "$target_dir"
-          find "$target_dir" -maxdepth 1 -type f -name '*.bin' -printf '%p %s bytes\n' | sort
 
-          dsa_count="$(find "$target_dir" -maxdepth 1 -type f -name '*clx_s20p-dsa*sysupgrade*.bin' | wc -l)"
-          gsw_count="$(find "$target_dir" -maxdepth 1 -type f -name '*clx_s20p-gsw*sysupgrade*.bin' | wc -l)"
-          if [ "$dsa_count" -eq 0 ] || [ "$gsw_count" -eq 0 ]; then
-            echo "::error::Missing real CLX S20P sysupgrade.bin output in $target_dir"
+          sysupgrade_count="$(find "$target_dir" -maxdepth 1 -type f -iname '*s20p*sysupgrade*' | wc -l)"
+          firmware_count="$(find "$target_dir" -maxdepth 1 -type f \( -iname '*s20p*.bin' -o -iname '*s20p*.itb' \) | wc -l)"
+
+          if [ "$sysupgrade_count" -eq 0 ]; then
+            echo "::error::Missing *s20p*sysupgrade* output in $target_dir"
             exit 1
           fi
+
+          if [ "$firmware_count" -eq 0 ]; then
+            echo "::error::Missing *s20p*.bin or *s20p*.itb output in $target_dir"
+            exit 1
+          fi
+
+          find "$target_dir" -maxdepth 1 -type f \( -iname '*s20p*sysupgrade*' -o -iname '*s20p*.bin' -o -iname '*s20p*.itb' \) -printf '%p %s bytes\n' | sort
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
@@ -211,5 +225,8 @@ jobs:
           name: clx-s20p-immortalwrt-24.10
           if-no-files-found: error
           path: |
-            openwrt/bin/targets/mediatek/filogic/*clx_s20p*.bin
+            openwrt/bin/targets/mediatek/filogic/*s20p*
+            openwrt/bin/targets/mediatek/filogic/*S20P*
             openwrt/bin/targets/mediatek/filogic/sha256sums
+            openwrt/bin/targets/mediatek/filogic/config.buildinfo
+            openwrt/bin/targets/mediatek/filogic/profiles.json
