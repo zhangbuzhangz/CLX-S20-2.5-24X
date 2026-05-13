@@ -77,13 +77,29 @@ jobs:
             sed -i \
               -e 's/#include "mt7986a\.dtsi"/#include "mt7986a.dtsi"/g' \
               -e 's/#include "mt7986\.dtsi"/#include "mt7986a.dtsi"/g' \
+              -e '/#include "mt7986a-pinctrl\.dtsi"/d' \
               -e 's/&wbsys/\&wifi/g' \
               -e 's/&xhci/\&ssusb/g' \
               -e 's/&pcie0_pins/\&pcie_pins/g' \
               -e 's/&pcie0/\&pcie/g' \
               -e 's/function = "flash"/function = "emmc"/g' \
+              -e 's/MTK_DRIVE_4mA/4/g' \
+              -e 's/MTK_DRIVE_6mA/6/g' \
+              -e 's/MTK_DRIVE_8mA/8/g' \
               "$dst"
             perl -0pi -e 's/\n&hnat\s*\{.*?\n\};\n/\n/s' "$dst"
+            perl -0pi -e 's/(&pcie\s*\{.*?\n\};)/$1\n\n&pcie_phy {\n\tstatus = "okay";\n};/s' "$dst"
+            perl -0pi -e 's/(&ssusb\s*\{.*?\n\};)/$1\n\n&usb_phy {\n\tstatus = "okay";\n};/s' "$dst"
+            if ! grep -q 'pcie_pins: pcie-pins' "$dst"; then
+              sed -i '/&pio {/a\
+\tpcie_pins: pcie-pins {\
+\t\tmux {\
+\t\t\tfunction = "pcie";\
+\t\t\tgroups = "pcie_clk", "pcie_wake", "pcie_pereset";\
+\t\t};\
+\t};\
+' "$dst"
+            fi
           done
 
           old_image="$(grep -RilE 'define Device/.*clx_s20p|define Device/.*s20p|DEVICE_.*clx_s20p|DEVICE_.*s20p' "$old_mediatek/image" | head -n1 || true)"
@@ -216,8 +232,13 @@ jobs:
           make -j"$(nproc)" || make -j1 V=s
 
       - name: List firmware outputs
+        if: always()
         working-directory: openwrt
         run: |
+          if [ ! -d bin/targets ]; then
+            echo "bin/targets does not exist yet"
+            exit 0
+          fi
           find bin/targets -maxdepth 5 -type f -printf "%p %s bytes\n" | sort
           find bin/targets -type f \( -name "*.bin" -o -name "*.itb" -o -name "*sysupgrade*" \) -printf "%p %s bytes\n" | sort
           grep -E "CONFIG_TARGET_DEVICE_.*s20p|CONFIG_TARGET_PROFILE|CONFIG_TARGET_MULTI_PROFILE" .config || true
