@@ -2,6 +2,9 @@ name: Build CLX S20P ImmortalWrt 24.10
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt.git
@@ -74,7 +77,13 @@ jobs:
             sed -i \
               -e 's/#include "mt7986a\.dtsi"/#include "mt7986a.dtsi"/g' \
               -e 's/#include "mt7986\.dtsi"/#include "mt7986a.dtsi"/g' \
+              -e 's/&wbsys/\&wifi/g' \
+              -e 's/&xhci/\&ssusb/g' \
+              -e 's/&pcie0_pins/\&pcie_pins/g' \
+              -e 's/&pcie0/\&pcie/g' \
+              -e 's/function = "flash"/function = "emmc"/g' \
               "$dst"
+            perl -0pi -e 's/\n&hnat\s*\{.*?\n\};\n/\n/s' "$dst"
           done
 
           old_image="$(grep -RilE 'define Device/.*clx_s20p|define Device/.*s20p|DEVICE_.*clx_s20p|DEVICE_.*s20p' "$old_mediatek/image" | head -n1 || true)"
@@ -84,16 +93,30 @@ jobs:
           fi
 
           awk '
-            BEGIN { capture = 0 }
+            BEGIN { capture = 0; want_target = 0 }
             /^define Device\/.*(clx_s20p|s20p)/ { capture = 1 }
-            capture { print }
-            capture && /^endef/ { print ""; capture = 0 }
+            capture {
+              print
+              if (/^endef/) {
+                capture = 0
+                want_target = 1
+              }
+              next
+            }
+            want_target && /^TARGET_DEVICES \+= .*clx_s20p/ {
+              print
+              print ""
+              want_target = 0
+            }
           ' "$old_image" > /tmp/clx-s20p-profiles.mk
 
           if ! grep -q 'define Device/.*clx_s20p' /tmp/clx-s20p-profiles.mk; then
             echo "::error::Failed to extract CLX S20P image profiles from $old_image"
             exit 1
           fi
+
+          grep -q '^TARGET_DEVICES += clx_s20p-dsa$' /tmp/clx-s20p-profiles.mk
+          grep -q '^TARGET_DEVICES += clx_s20p-gsw$' /tmp/clx-s20p-profiles.mk
 
           sed -i \
             -e 's/DEVICE_DTS_DIR := .*/DEVICE_DTS_DIR := ..\/dts/g' \
@@ -109,6 +132,8 @@ jobs:
           } >> "$new_image"
 
           grep -RniE 'clx_s20p|s20p' "$new_image" "$new_dts_dir"
+          grep -q '^TARGET_DEVICES += clx_s20p-dsa$' "$new_image"
+          grep -q '^TARGET_DEVICES += clx_s20p-gsw$' "$new_image"
 
       - name: Add iStore feed
         working-directory: openwrt
@@ -121,8 +146,9 @@ jobs:
         working-directory: openwrt
         run: |
           ./scripts/feeds update -a
+          ./scripts/feeds update istore
           ./scripts/feeds install -a
-          ./scripts/feeds install -p istore istore-ui luci-app-store || true
+          ./scripts/feeds install -d y -p istore luci-app-store
 
       - name: Generate CLX S20P config
         working-directory: openwrt
@@ -142,7 +168,6 @@ jobs:
           CONFIG_PACKAGE_luci-compat=y
           CONFIG_PACKAGE_luci-app-opkg=y
           CONFIG_PACKAGE_luci-app-store=y
-          CONFIG_PACKAGE_istore-ui=y
           CONFIG_PACKAGE_luci-lib-taskd=y
           CONFIG_PACKAGE_luci-lib-xterm=y
 
@@ -174,7 +199,7 @@ jobs:
 
           grep -q '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_clx_s20p-dsa=y' .config
           grep -q '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_clx_s20p-gsw=y' .config
-          grep -q '^CONFIG_PACKAGE_istore-ui=y' .config
+          grep -q '^CONFIG_PACKAGE_luci-app-store=y' .config
           grep -q '^CONFIG_PACKAGE_luci-app-dockerman=y' .config
           grep -q '^CONFIG_PACKAGE_luci-app-ttyd=y' .config
           grep -q '^# CONFIG_PACKAGE_wpad-basic-mbedtls is not set' .config
