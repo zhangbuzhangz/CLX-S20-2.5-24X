@@ -100,15 +100,19 @@ jobs:
             # GPIOs onto phy@5/phy@7 while keeping the old MAC properties.
             perl -0pi -e 's/(reg_1p8v:\s*regulator-1p8v\s*\{(?![^}]*regulator-always-on;)[^}]*regulator-boot-on;\r?\n)/$1\t\tregulator-always-on;\n/s' "$dst"
             perl -0pi -e 's/(reg_3p3v:\s*regulator-3p3v\s*\{(?![^}]*regulator-always-on;)[^}]*regulator-boot-on;\r?\n)/$1\t\tregulator-always-on;\n/s' "$dst"
-            perl -0pi -e 's/(phy5:\s*phy\@5\s*\{(?![^}]*reset-gpios)[^}]*reg = <5>;\s*\r?\n)(\s*\};)/$1\t\t\tphy-mode = "2500base-x";\n\t\t\treset-gpios = <&pio 48 GPIO_ACTIVE_HIGH>;\n\t\t\treset-assert-us = <100000>;\n\t\t\treset-deassert-us = <100000>;\n$2/s' "$dst"
-            perl -0pi -e 's/(phy7:\s*phy\@7\s*\{(?![^}]*reset-gpios)[^}]*reg = <7>;\s*\r?\n)(\s*\};)/$1\t\t\tphy-mode = "2500base-x";\n\t\t\treset-gpios = <&pio 6 GPIO_ACTIVE_HIGH>;\n\t\t\treset-assert-us = <100000>;\n\t\t\treset-deassert-us = <100000>;\n$2/s' "$dst"
+            sed -i \
+              -e 's/ext-phy-reset-gpios = <&pio 48 GPIO_ACTIVE_HIGH>;/ext-phy-reset-gpios = <\&pio 48 GPIO_ACTIVE_LOW>;/g' \
+              -e 's/ext-phy-reset-gpios = <&pio 6 GPIO_ACTIVE_HIGH>;/ext-phy-reset-gpios = <\&pio 6 GPIO_ACTIVE_LOW>;/g' \
+              "$dst"
+            perl -0pi -e 's/(phy5:\s*phy\@5\s*\{(?![^}]*reset-gpios)[^}]*reg = <5>;\s*\r?\n)(\s*\};)/$1\t\t\tphy-mode = "2500base-x";\n\t\t\treset-gpios = <&pio 48 GPIO_ACTIVE_LOW>;\n\t\t\treset-assert-us = <100000>;\n\t\t\treset-deassert-us = <100000>;\n$2/s' "$dst"
+            perl -0pi -e 's/(phy7:\s*phy\@7\s*\{(?![^}]*reset-gpios)[^}]*reg = <7>;\s*\r?\n)(\s*\};)/$1\t\t\tphy-mode = "2500base-x";\n\t\t\treset-gpios = <&pio 6 GPIO_ACTIVE_LOW>;\n\t\t\treset-assert-us = <100000>;\n\t\t\treset-deassert-us = <100000>;\n$2/s' "$dst"
           done
 
-          grep -RniE 'phy[57]: phy@[57]|ext-phy-reset-gpios|reset-gpios = <&pio (48|6) GPIO_ACTIVE_HIGH>|regulator-always-on' "$new_dts_dir"
-          grep -Rq 'ext-phy-reset-gpios = <&pio 48 GPIO_ACTIVE_HIGH>;' "$new_dts_dir"
-          grep -Rq 'ext-phy-reset-gpios = <&pio 6 GPIO_ACTIVE_HIGH>;' "$new_dts_dir"
-          grep -Rq '^[[:space:]]*reset-gpios = <&pio 48 GPIO_ACTIVE_HIGH>;' "$new_dts_dir"
-          grep -Rq '^[[:space:]]*reset-gpios = <&pio 6 GPIO_ACTIVE_HIGH>;' "$new_dts_dir"
+          grep -RniE 'phy[57]: phy@[57]|ext-phy-reset-gpios|reset-gpios = <&pio (48|6) GPIO_ACTIVE_LOW>|regulator-always-on' "$new_dts_dir"
+          grep -Rq 'ext-phy-reset-gpios = <&pio 48 GPIO_ACTIVE_LOW>;' "$new_dts_dir"
+          grep -Rq 'ext-phy-reset-gpios = <&pio 6 GPIO_ACTIVE_LOW>;' "$new_dts_dir"
+          grep -Rq '^[[:space:]]*reset-gpios = <&pio 48 GPIO_ACTIVE_LOW>;' "$new_dts_dir"
+          grep -Rq '^[[:space:]]*reset-gpios = <&pio 6 GPIO_ACTIVE_LOW>;' "$new_dts_dir"
 
           old_image="$(grep -RilE 'define Device/.*clx_s20p|define Device/.*s20p|DEVICE_.*clx_s20p|DEVICE_.*s20p' "$old_mediatek/image" | head -n1 || true)"
           if [ -z "$old_image" ]; then
@@ -172,7 +176,68 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds update istore
           ./scripts/feeds install -a
-          ./scripts/feeds install -d y -p istore luci-app-store
+          for pkg in luci-app-store luci-app-istorex quickstart luci-lib-taskd luci-lib-xterm luci-theme-argon; do
+            ./scripts/feeds install -d y -p istore "$pkg" || ./scripts/feeds install -d y "$pkg" || true
+          done
+
+      - name: Add CLX S20P first boot defaults
+        working-directory: openwrt
+        run: |
+          set -euxo pipefail
+          mkdir -p files/etc/uci-defaults
+
+          cat > files/etc/uci-defaults/90-istore-theme <<'EOF'
+          #!/bin/sh
+          if [ -d /www/luci-static/argon ]; then
+            uci -q set luci.main.mediaurlbase='/luci-static/argon'
+            uci -q commit luci
+          fi
+          exit 0
+          EOF
+
+          cat > files/etc/uci-defaults/99-expand-rootfs <<'EOF'
+          #!/bin/sh
+          MARK=/etc/.clx-s20p-rootfs-expanded
+          DISK=/dev/mmcblk0
+          PART=/dev/mmcblk0p6
+
+          log() {
+            logger -t clx-expand-rootfs "$*"
+          }
+
+          [ -e "$MARK" ] && exit 0
+          [ -b "$DISK" ] || exit 0
+          [ -b "$PART" ] || exit 0
+
+          for cmd in parted resize2fs; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+              log "missing $cmd, skip rootfs expansion"
+              exit 0
+            fi
+          done
+
+          if findmnt -n -o SOURCE /overlay 2>/dev/null | grep -q '^/dev/loop'; then
+            log "overlay is loop-backed; expanding backing ext4 partition $PART"
+          fi
+
+          if parted -s "$DISK" print >/dev/null 2>&1; then
+            parted -s "$DISK" resizepart 6 100% || log "resizepart reported non-fatal status"
+            partprobe "$DISK" >/dev/null 2>&1 || blockdev --rereadpt "$DISK" >/dev/null 2>&1 || true
+            sleep 2
+          fi
+
+          fstype="$(blkid -s TYPE -o value "$PART" 2>/dev/null || true)"
+          if [ "$fstype" = "ext4" ]; then
+            resize2fs "$PART" || log "resize2fs reported non-fatal status"
+          else
+            log "$PART is $fstype, skip resize2fs"
+          fi
+
+          touch "$MARK"
+          exit 0
+          EOF
+
+          chmod 0755 files/etc/uci-defaults/90-istore-theme files/etc/uci-defaults/99-expand-rootfs
 
       - name: Generate CLX S20P config
         working-directory: openwrt
@@ -192,8 +257,11 @@ jobs:
           CONFIG_PACKAGE_luci-compat=y
           CONFIG_PACKAGE_luci-app-opkg=y
           CONFIG_PACKAGE_luci-app-store=y
+          CONFIG_PACKAGE_luci-app-istorex=y
           CONFIG_PACKAGE_luci-lib-taskd=y
           CONFIG_PACKAGE_luci-lib-xterm=y
+          CONFIG_PACKAGE_quickstart=y
+          CONFIG_PACKAGE_luci-theme-argon=y
 
           CONFIG_PACKAGE_luci-app-dockerman=y
           CONFIG_PACKAGE_luci-app-ttyd=y
@@ -205,6 +273,12 @@ jobs:
           CONFIG_PACKAGE_kmod-veth=y
           CONFIG_PACKAGE_kmod-br-netfilter=y
           CONFIG_PACKAGE_kmod-nf-ipvs=y
+          CONFIG_PACKAGE_block-mount=y
+          CONFIG_PACKAGE_parted=y
+          CONFIG_PACKAGE_fdisk=y
+          CONFIG_PACKAGE_e2fsprogs=y
+          CONFIG_PACKAGE_resize2fs=y
+          CONFIG_PACKAGE_lsblk=y
 
           # Keep Wi-Fi disabled by default and do not pull hostapd/wpad.
           # CONFIG_PACKAGE_wpad-basic-mbedtls is not set
@@ -226,7 +300,10 @@ jobs:
           grep -q '^CONFIG_PACKAGE_luci-app-store=y' .config
           grep -q '^CONFIG_PACKAGE_luci-app-dockerman=y' .config
           grep -q '^CONFIG_PACKAGE_luci-app-ttyd=y' .config
+          grep -q '^CONFIG_PACKAGE_block-mount=y' .config
+          grep -q '^CONFIG_PACKAGE_resize2fs=y' .config
           grep -q '^# CONFIG_PACKAGE_wpad-basic-mbedtls is not set' .config
+          grep -E '^CONFIG_PACKAGE_(luci-app-istorex|quickstart|luci-theme-argon)=y' .config || true
 
       - name: Download packages
         working-directory: openwrt
