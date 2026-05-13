@@ -333,7 +333,7 @@ jobs:
 
           make target/linux/prepare -j"$(nproc)" V=s
 
-          linux_dir="$(find build_dir -path '*/linux-mediatek_filogic/linux-6.6*' -type d | head -n1)"
+          linux_dir="$(find build_dir -path '*/linux-mediatek_filogic/linux-6.6*' -type d -print -quit)"
           if [ -z "$linux_dir" ]; then
             echo "::error::Unable to locate prepared Linux 6.6 source tree"
             exit 1
