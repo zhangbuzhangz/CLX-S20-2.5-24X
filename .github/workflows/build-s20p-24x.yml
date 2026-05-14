@@ -78,6 +78,7 @@ jobs:
               -e 's/#include "mt7986a\.dtsi"/#include "mt7986a.dtsi"/g' \
               -e 's/#include "mt7986\.dtsi"/#include "mt7986a.dtsi"/g' \
               -e '/#include "mt7986a-pinctrl\.dtsi"/d' \
+              -e 's/model = "CLX S20P";/model = "ZBZ S20MP";/g' \
               -e 's/&wbsys/\&wifi/g' \
               -e 's/&xhci/\&ssusb/g' \
               -e 's/&pcie0_pins/\&pcie_pins/g' \
@@ -92,6 +93,9 @@ jobs:
             perl -0pi -e 's/(&ssusb\s*\{.*?\n\};)/$1\n\n&usb_phy {\n\tstatus = "okay";\n};/s' "$dst"
             if ! grep -q 'pcie_pins: pcie-pins' "$dst"; then
               perl -0pi -e 's/&pio \{/&pio {\n\tpcie_pins: pcie-pins {\n\t\tmux {\n\t\t\tfunction = "pcie";\n\t\t\tgroups = "pcie_clk", "pcie_wake", "pcie_pereset";\n\t\t};\n\t};\n/s' "$dst"
+            fi
+            if ! grep -q 'ethernet0 = &gmac0;' "$dst"; then
+              perl -0pi -e 's/(aliases\s*\{\n)/$1\t\tethernet0 = \&gmac0;\n\t\tethernet1 = \&gmac1;\n/s' "$dst"
             fi
 
             # The old 5.4 vendor tree reset the two RTL8221B PHYs through
@@ -148,6 +152,9 @@ jobs:
 
           sed -i \
             -e 's/DEVICE_DTS_DIR := .*/DEVICE_DTS_DIR := ..\/dts/g' \
+            -e 's/DEVICE_VENDOR := CLX/DEVICE_VENDOR := ZBZ/g' \
+            -e 's/DEVICE_MODEL := S20P DSA/DEVICE_MODEL := S20MP DSA/g' \
+            -e 's/DEVICE_MODEL := S20P GSW/DEVICE_MODEL := S20MP GSW/g' \
             -e 's/\bmt7986\b/filogic/g' \
             -e 's/TARGET_mediatek_mt7986/TARGET_mediatek_filogic/g' \
             -e 's/DEVICE_PACKAGES :=/DEVICE_PACKAGES +=/g' \
@@ -162,6 +169,9 @@ jobs:
           grep -RniE 'clx_s20p|s20p' "$new_image" "$new_dts_dir"
           grep -q '^TARGET_DEVICES += clx_s20p-dsa$' "$new_image"
           grep -q '^TARGET_DEVICES += clx_s20p-gsw$' "$new_image"
+          grep -Rq 'model = "ZBZ S20MP";' "$new_dts_dir"
+          grep -Rq 'ethernet0 = &gmac0;' "$new_dts_dir"
+          grep -Rq 'ethernet1 = &gmac1;' "$new_dts_dir"
 
       - name: Port CLX S20P network defaults
         working-directory: openwrt
@@ -208,6 +218,9 @@ jobs:
           for pkg in luci-app-store luci-app-istorex quickstart luci-lib-taskd luci-lib-xterm luci-theme-argon; do
             ./scripts/feeds install -d y -p istore "$pkg" || ./scripts/feeds install -d y "$pkg" || true
           done
+          for pkg in luci-app-upnp luci-app-ddns luci-app-wol luci-app-arpbind luci-app-samba4 luci-app-filebrowser luci-app-filetransfer luci-app-diskman luci-app-openclash luci-app-passwall; do
+            ./scripts/feeds install -d y "$pkg" || true
+          done
 
       - name: Add CLX S20P first boot defaults
         working-directory: openwrt
@@ -224,11 +237,46 @@ jobs:
           exit 0
           EOF
 
+          cat > files/etc/uci-defaults/91-zbz-network <<'EOF'
+          #!/bin/sh
+          [ -r /lib/functions.sh ] && . /lib/functions.sh
+          board="$(board_name 2>/dev/null)"
+          case "$board" in
+          clx,s20p-dsa)
+            uci -q set network.br_lan='device'
+            uci -q set network.br_lan.name='br-lan'
+            uci -q set network.br_lan.type='bridge'
+            uci -q delete network.br_lan.ports
+            for port in lan1 lan2 lan3 lan4 lan5 lan6; do
+              uci -q add_list network.br_lan.ports="$port"
+            done
+
+            uci -q set network.lan='interface'
+            uci -q set network.lan.device='br-lan'
+            uci -q delete network.lan.ifname
+
+            uci -q set network.wan='interface'
+            uci -q set network.wan.device='eth1'
+            uci -q set network.wan.proto='dhcp'
+            uci -q delete network.wan.ifname
+
+            uci -q set network.wan6='interface'
+            uci -q set network.wan6.device='eth1'
+            uci -q set network.wan6.proto='dhcpv6'
+            uci -q delete network.wan6.ifname
+
+            uci -q commit network
+            ;;
+          esac
+          exit 0
+          EOF
+
           cat > files/etc/uci-defaults/99-expand-rootfs <<'EOF'
           #!/bin/sh
           MARK=/etc/.clx-s20p-rootfs-expanded
           DISK=/dev/mmcblk0
           PART=/dev/mmcblk0p6
+          MNT=/tmp/clx-mmc-overlay
 
           log() {
             logger -t clx-expand-rootfs "$*"
@@ -238,20 +286,75 @@ jobs:
           [ -b "$DISK" ] || exit 0
           [ -b "$PART" ] || exit 0
 
-          if findmnt -n -o SOURCE /overlay 2>/dev/null | grep -q '^/dev/loop'; then
-            log "overlay is loop-backed; $PART may already be large but loop overlay remains small"
-          else
-            log "overlay source: $(findmnt -n -o SOURCE /overlay 2>/dev/null || echo unknown)"
+          overlay_src="$(findmnt -n -o SOURCE /overlay 2>/dev/null || true)"
+          if [ "$overlay_src" = "$PART" ]; then
+            log "overlay already mounted from $PART"
+            touch "$MARK"
+            exit 0
           fi
 
-          log "$PART type=$(blkid -s TYPE -o value "$PART" 2>/dev/null || echo unknown) size=$(blockdev --getsize64 "$PART" 2>/dev/null || echo unknown)"
-          log "no destructive overlay conversion is performed by this firmware"
+          fstype="$(blkid -s TYPE -o value "$PART" 2>/dev/null || true)"
+          if [ -z "$fstype" ]; then
+            if command -v mkfs.ext4 >/dev/null 2>&1; then
+              log "$PART has no filesystem; creating ext4"
+              mkfs.ext4 -F "$PART" >/dev/null 2>&1 || exit 0
+              fstype="ext4"
+            else
+              log "$PART has no filesystem and mkfs.ext4 is missing"
+              exit 0
+            fi
+          fi
+
+          if [ "$fstype" = "ext4" ] && command -v resize2fs >/dev/null 2>&1; then
+            resize2fs "$PART" >/dev/null 2>&1 || log "resize2fs reported non-fatal status"
+          fi
+
+          mkdir -p "$MNT"
+          mounted_here=0
+          existing_mnt="$(findmnt -n -o TARGET "$PART" 2>/dev/null | head -n1)"
+          if [ -n "$existing_mnt" ]; then
+            MNT="$existing_mnt"
+          else
+            mount "$PART" "$MNT" >/dev/null 2>&1 || exit 0
+            mounted_here=1
+          fi
+
+          mkdir -p "$MNT/upper" "$MNT/work" "$MNT/upper/etc"
+          if [ -d /overlay/upper ] && [ -z "$(ls -A "$MNT/upper" 2>/dev/null)" ]; then
+            (cd /overlay/upper && tar -cpf - .) | (cd "$MNT/upper" && tar -xpf -) || log "copy current overlay upper failed"
+          fi
+          touch "$MNT/upper/etc/.clx-s20p-rootfs-expanded"
+
+          mkdir -p /etc/config
+          touch /etc/config/fstab
+          uuid="$(block info "$PART" 2>/dev/null | sed -n 's/.*UUID="\([^"]*\)".*/\1/p')"
+          uci -q delete fstab.clx_overlay
+          uci -q set fstab.clx_overlay='mount'
+          if [ -n "$uuid" ]; then
+            uci -q set fstab.clx_overlay.uuid="$uuid"
+          else
+            uci -q set fstab.clx_overlay.device="$PART"
+          fi
+          uci -q set fstab.clx_overlay.target='/overlay'
+          uci -q set fstab.clx_overlay.fstype="$fstype"
+          uci -q set fstab.clx_overlay.options='rw,noatime'
+          uci -q set fstab.clx_overlay.enabled='1'
+          uci -q set fstab.clx_overlay.enabled_fsck='0'
+          uci -q commit fstab
 
           touch "$MARK"
+          [ "$mounted_here" -eq 1 ] && umount "$MNT" >/dev/null 2>&1 || true
+
+          if echo "$overlay_src" | grep -q '^/dev/loop'; then
+            log "configured $PART as extroot overlay; rebooting once to activate full eMMC overlay"
+            (sleep 8; reboot) >/dev/null 2>&1 &
+          else
+            log "configured $PART as extroot overlay; reboot required to activate"
+          fi
           exit 0
           EOF
 
-          chmod 0755 files/etc/uci-defaults/90-istore-theme files/etc/uci-defaults/99-expand-rootfs
+          chmod 0755 files/etc/uci-defaults/90-istore-theme files/etc/uci-defaults/91-zbz-network files/etc/uci-defaults/99-expand-rootfs
 
       - name: Generate CLX S20P config
         working-directory: openwrt
@@ -293,6 +396,7 @@ jobs:
           CONFIG_PACKAGE_e2fsprogs=y
           CONFIG_PACKAGE_resize2fs=y
           CONFIG_PACKAGE_lsblk=y
+          CONFIG_PACKAGE_ip-bridge=y
           CONFIG_PACKAGE_kmod-nvme=y
           CONFIG_PACKAGE_pciutils=y
           CONFIG_PACKAGE_nvme-cli=y
@@ -310,6 +414,14 @@ jobs:
           # CONFIG_PACKAGE_mtwifi-cfg is not set
           EOF
 
+          for pkg in luci-app-upnp luci-app-ddns luci-app-wol luci-app-arpbind luci-app-samba4 luci-app-filebrowser luci-app-filetransfer luci-app-diskman luci-app-openclash luci-app-passwall; do
+            if find feeds package -path "*/$pkg/Makefile" -print -quit | grep -q .; then
+              echo "CONFIG_PACKAGE_${pkg}=y" >> .config
+            else
+              echo "Skip unavailable optional package: $pkg"
+            fi
+          done
+
           make defconfig
 
           grep -q '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_clx_s20p-dsa=y' .config
@@ -320,8 +432,9 @@ jobs:
           grep -q '^CONFIG_PACKAGE_block-mount=y' .config
           grep -q '^CONFIG_PACKAGE_resize2fs=y' .config
           grep -q '^CONFIG_PACKAGE_kmod-nvme=y' .config
+          grep -q '^CONFIG_PACKAGE_ip-bridge=y' .config || true
           grep -q '^# CONFIG_PACKAGE_wpad-basic-mbedtls is not set' .config
-          grep -E '^CONFIG_PACKAGE_(luci-app-istorex|quickstart|luci-theme-argon)=y' .config || true
+          grep -E '^CONFIG_PACKAGE_(luci-app-istorex|quickstart|luci-theme-argon|luci-app-upnp|luci-app-ddns|luci-app-wol|luci-app-arpbind|luci-app-samba4|luci-app-filebrowser|luci-app-filetransfer|luci-app-diskman)=y' .config || true
 
       - name: Port CLX S20P RTL822x vendor init
         working-directory: openwrt
