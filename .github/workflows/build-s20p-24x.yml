@@ -222,6 +222,84 @@ jobs:
             ./scripts/feeds install -d y "$pkg" || true
           done
 
+      - name: Patch ZBZ S20MP LuCI port status
+        working-directory: openwrt
+        run: |
+          set -euxo pipefail
+          ports_js="$(find feeds package -path '*/view/status/include/29_ports.js' -print -quit)"
+          test -f "$ports_js"
+
+          if ! grep -q 'addZBZS20MPPorts' "$ports_js"; then
+            PORTS_JS="$ports_js" python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["PORTS_JS"])
+          text = path.read_text()
+
+          helper = r'''
+          function ensureKnownPort(ports, name) {
+            if (!isString(name))
+              return;
+
+            for (var i = 0; i < ports.length; i++) {
+              if (ports[i].device == name) {
+                if (!ports[i].netdev)
+                  ports[i].netdev = network.instantiateDevice(name);
+                return;
+              }
+            }
+
+            ports.push({
+              device: name,
+              netdev: network.instantiateDevice(name)
+            });
+          }
+
+          function addZBZS20MPPorts(known_ports, board_name) {
+            var devices = uci.sections('network', 'device'),
+                interfaces = uci.sections('network', 'interface');
+
+            for (var i = 0, s; (s = devices[i]) != null; i++) {
+              if (s.type == 'bridge' && s.name == 'br-lan') {
+                var ports = L.toArray(s.ports);
+                for (var j = 0; j < ports.length; j++)
+                  ensureKnownPort(known_ports, ports[j]);
+              }
+            }
+
+            for (var i = 0, s; (s = interfaces[i]) != null; i++) {
+              if ((s['.name'] == 'wan' || s['.name'] == 'wan6') && isString(s.device))
+                ensureKnownPort(known_ports, s.device);
+            }
+
+            board_name = (board_name || '').trim();
+            if (/^clx,s20p-(dsa|gsw)$/.test(board_name)) {
+              [ 'lan1', 'lan2', 'lan3', 'lan4', 'lan5', 'lan6', 'eth1' ].forEach(function(port) {
+                ensureKnownPort(known_ports, port);
+              });
+            }
+          }
+          '''
+
+          text = text.replace("\nfunction formatSpeed", helper + "\nfunction formatSpeed")
+          text = text.replace(
+              "uci.load('network')",
+              "uci.load('network'),\n\t\t\tL.resolveDefault(fs.read('/tmp/sysinfo/board_name'), '')",
+          )
+          text = text.replace(
+              "\n\t\tknown_ports.sort(function(a, b) {",
+              "\n\t\taddZBZS20MPPorts(known_ports, data[4]);\n\n\t\tknown_ports.sort(function(a, b) {",
+          )
+
+          path.write_text(text)
+          PY
+          fi
+
+          grep -q 'function addZBZS20MPPorts' "$ports_js"
+          grep -q "fs.read('/tmp/sysinfo/board_name')" "$ports_js"
+          grep -q 'addZBZS20MPPorts(known_ports, data\[4\]);' "$ports_js"
+
       - name: Add CLX S20P first boot defaults
         working-directory: openwrt
         run: |
@@ -253,6 +331,9 @@ jobs:
 
             uci -q set network.lan='interface'
             uci -q set network.lan.device='br-lan'
+            uci -q set network.lan.proto='static'
+            uci -q set network.lan.ipaddr='192.168.1.1'
+            uci -q set network.lan.netmask='255.255.255.0'
             uci -q delete network.lan.ifname
 
             uci -q set network.wan='interface'
@@ -266,6 +347,52 @@ jobs:
             uci -q delete network.wan6.ifname
 
             uci -q commit network
+            ;;
+          esac
+          exit 0
+          EOF
+
+          cat > files/etc/uci-defaults/92-zbz-board-json <<'EOF'
+          #!/bin/sh
+          [ -r /lib/functions.sh ] && . /lib/functions.sh
+          board="$(board_name 2>/dev/null)"
+          case "$board" in
+          clx,s20p-dsa|clx,s20p-gsw)
+            cat > /etc/board.json <<JSON
+          {
+            "model": {
+              "id": "$board",
+              "name": "ZBZ S20MP"
+            },
+            "network": {
+              "lan": {
+                "device": "br-lan",
+                "protocol": "static"
+              },
+              "wan": {
+                "device": "eth1",
+                "protocol": "dhcp"
+              },
+              "wan6": {
+                "device": "eth1",
+                "protocol": "dhcpv6"
+              }
+            },
+            "switch": {
+              "switch0": {
+                "ports": [
+                  { "num": 0, "device": "lan1", "role": "lan", "index": 1 },
+                  { "num": 1, "device": "lan2", "role": "lan", "index": 2 },
+                  { "num": 2, "device": "lan3", "role": "lan", "index": 3 },
+                  { "num": 3, "device": "lan4", "role": "lan", "index": 4 },
+                  { "num": 4, "device": "lan5", "role": "lan", "index": 5 },
+                  { "num": 5, "device": "lan6", "role": "lan", "index": 6 },
+                  { "num": 6, "device": "eth1", "role": "wan" }
+                ]
+              }
+            }
+          }
+          JSON
             ;;
           esac
           exit 0
@@ -354,7 +481,7 @@ jobs:
           exit 0
           EOF
 
-          chmod 0755 files/etc/uci-defaults/90-istore-theme files/etc/uci-defaults/91-zbz-network files/etc/uci-defaults/99-expand-rootfs
+          chmod 0755 files/etc/uci-defaults/90-istore-theme files/etc/uci-defaults/91-zbz-network files/etc/uci-defaults/92-zbz-board-json files/etc/uci-defaults/99-expand-rootfs
 
       - name: Generate CLX S20P config
         working-directory: openwrt
