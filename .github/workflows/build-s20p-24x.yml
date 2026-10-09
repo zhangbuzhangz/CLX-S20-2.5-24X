@@ -565,14 +565,15 @@ jobs:
           CONFIG_PACKAGE_pciutils=y
           CONFIG_PACKAGE_nvme-cli=y
 
-          # Keep Wi-Fi disabled by default and do not pull hostapd/wpad.
-          # CONFIG_PACKAGE_wpad-basic-mbedtls is not set
+          # Ship MT7986 Wi-Fi as a manually loaded diagnostic module.
+          CONFIG_PACKAGE_kmod-mt7915e=y
+          CONFIG_PACKAGE_kmod-mt7986-firmware=y
+          CONFIG_PACKAGE_iw=y
+          CONFIG_PACKAGE_wireless-regdb=y
+          CONFIG_PACKAGE_wpad-basic-mbedtls=y
           # CONFIG_PACKAGE_wpad-openssl is not set
           # CONFIG_PACKAGE_wpad is not set
           # CONFIG_PACKAGE_hostapd is not set
-          # CONFIG_PACKAGE_iw is not set
-          # CONFIG_PACKAGE_iwinfo is not set
-          # CONFIG_PACKAGE_wireless-regdb is not set
           # CONFIG_PACKAGE_luci-app-mtwifi-cfg is not set
           # CONFIG_PACKAGE_luci-i18n-mtwifi-cfg-zh-cn is not set
           # CONFIG_PACKAGE_mtwifi-cfg is not set
@@ -597,8 +598,24 @@ jobs:
           grep -q '^CONFIG_PACKAGE_resize2fs=y' .config
           grep -q '^CONFIG_PACKAGE_kmod-nvme=y' .config
           grep -q '^CONFIG_PACKAGE_ip-bridge=y' .config || true
-          grep -q '^# CONFIG_PACKAGE_wpad-basic-mbedtls is not set' .config
+          grep -q '^CONFIG_PACKAGE_kmod-mt7915e=y' .config
+          grep -q '^CONFIG_PACKAGE_kmod-mt7986-firmware=y' .config
+          grep -q '^CONFIG_PACKAGE_iw=y' .config
+          grep -q '^CONFIG_PACKAGE_wpad-basic-mbedtls=y' .config
           grep -E '^CONFIG_PACKAGE_(luci-app-istorex|quickstart|luci-theme-argon|luci-app-upnp|luci-app-ddns|luci-app-wol|luci-app-arpbind|luci-app-samba4|luci-app-filebrowser|luci-app-filetransfer|luci-app-diskman)=y' .config || true
+
+      - name: Keep Wi-Fi driver manual-load only
+        working-directory: openwrt
+        run: |
+          set -euxo pipefail
+          mt76_makefile=package/kernel/mt76/Makefile
+          test -f "$mt76_makefile"
+          grep -Fq 'AUTOLOAD:=$(call AutoProbe,mt7915e)' "$mt76_makefile"
+          grep -Fq 'MODPARAMS.mt7915e:=wed_enable=Y' "$mt76_makefile"
+          sed -i '/^[[:space:]]*AUTOLOAD:=$(call AutoProbe,mt7915e)[[:space:]]*$/d' "$mt76_makefile"
+          sed -i 's/MODPARAMS.mt7915e:=wed_enable=Y/MODPARAMS.mt7915e:=wed_enable=N/' "$mt76_makefile"
+          ! grep -Fq 'AUTOLOAD:=$(call AutoProbe,mt7915e)' "$mt76_makefile"
+          grep -Fq 'MODPARAMS.mt7915e:=wed_enable=N' "$mt76_makefile"
 
       - name: Port CLX S20P RTL822x vendor init
         working-directory: openwrt
@@ -704,6 +721,21 @@ jobs:
 
           find "$target_dir" -maxdepth 1 -type f \( -iname '*s20p*sysupgrade*' -o -iname '*s20p*.bin' -o -iname '*s20p*.itb' \) -printf '%p %s bytes\n' | sort
 
+      - name: Verify Wi-Fi diagnostic packages and isolation
+        working-directory: openwrt
+        run: |
+          set -euxo pipefail
+          target_dir=bin/targets/mediatek/filogic
+          for profile in dsa gsw; do
+            manifest="$(find "$target_dir" -maxdepth 1 -type f -name "*clx_s20p-${profile}*.manifest" -print -quit)"
+            test -n "$manifest"
+            grep -q '^kmod-mt7915e - ' "$manifest"
+            grep -q '^kmod-mt7986-firmware - ' "$manifest"
+            grep -q '^iw - ' "$manifest"
+          done
+          ! grep -Fq 'AUTOLOAD:=$(call AutoProbe,mt7915e)' package/kernel/mt76/Makefile
+          grep -Fq 'MODPARAMS.mt7915e:=wed_enable=N' package/kernel/mt76/Makefile
+
       - name: Rename nohs400 DSA sysupgrade
         working-directory: openwrt
         run: |
@@ -731,7 +763,7 @@ jobs:
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: clx-s20p-nohs400-immortalwrt-24.10
+          name: clx-s20p-nohs400-wifi-test-immortalwrt-24.10
           if-no-files-found: error
           path: |
             openwrt/bin/targets/mediatek/filogic/*s20p*
