@@ -727,12 +727,19 @@ jobs:
           set -euxo pipefail
           target_dir=bin/targets/mediatek/filogic
           for profile in dsa gsw; do
-            manifest="$(find "$target_dir" -maxdepth 1 -type f -name "*clx_s20p-${profile}*.manifest" -print -quit)"
-            test -n "$manifest"
-            grep -q '^kmod-mt7915e - ' "$manifest"
-            grep -q '^kmod-mt7986-firmware - ' "$manifest"
-            grep -q '^iw - ' "$manifest"
+            image="$(find "$target_dir" -maxdepth 1 -type f -name "*clx_s20p-${profile}*sysupgrade.bin" -print -quit)"
+            test -n "$image"
+            test -s "$image"
           done
+          for pkg in kmod-cfg80211 kmod-mac80211 kmod-mt76-core kmod-mt76-connac kmod-mt7915e kmod-mt7986-firmware; do
+            ipk="$(find "$target_dir/packages" -maxdepth 1 -type f -name "${pkg}_*.ipk" -print -quit)"
+            test -n "$ipk"
+            test -s "$ipk"
+            printf '%s %s bytes\n' "$ipk" "$(stat -c %s "$ipk")"
+          done
+          grep -q '^CONFIG_PACKAGE_kmod-mt7915e=y' .config
+          grep -q '^CONFIG_PACKAGE_kmod-mt7986-firmware=y' .config
+          grep -q '^CONFIG_PACKAGE_iw=y' .config
           ! grep -Fq 'AUTOLOAD:=$(call AutoProbe,mt7915e)' package/kernel/mt76/Makefile
           grep -Fq 'MODPARAMS.mt7915e:=wed_enable=N' package/kernel/mt76/Makefile
 
@@ -771,3 +778,9 @@ jobs:
             openwrt/bin/targets/mediatek/filogic/sha256sums
             openwrt/bin/targets/mediatek/filogic/config.buildinfo
             openwrt/bin/targets/mediatek/filogic/profiles.json
+            openwrt/bin/targets/mediatek/filogic/packages/kmod-cfg80211_*.ipk
+            openwrt/bin/targets/mediatek/filogic/packages/kmod-mac80211_*.ipk
+            openwrt/bin/targets/mediatek/filogic/packages/kmod-mt76-core_*.ipk
+            openwrt/bin/targets/mediatek/filogic/packages/kmod-mt76-connac_*.ipk
+            openwrt/bin/targets/mediatek/filogic/packages/kmod-mt7915e_*.ipk
+            openwrt/bin/targets/mediatek/filogic/packages/kmod-mt7986-firmware_*.ipk
