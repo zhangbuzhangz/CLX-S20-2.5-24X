@@ -754,15 +754,32 @@ jobs:
           test -f "$target_dir/$old_name"
           mv "$target_dir/$old_name" "$target_dir/$new_name"
 
-          if [ -f "$target_dir/sha256sums" ]; then
-            (
-              cd "$target_dir"
-              grep -v "  $old_name$" sha256sums > sha256sums.tmp || true
-              sha256sum "$new_name" >> sha256sums.tmp
-              sort -k2 sha256sums.tmp > sha256sums
-              rm -f sha256sums.tmp
-            )
-          fi
+          OLD_NAME="$old_name" NEW_NAME="$new_name" TARGET_DIR="$target_dir" python3 <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["TARGET_DIR"]) / "profiles.json"
+          data = json.loads(path.read_text())
+          images = data["profiles"]["clx_s20p-dsa"]["images"]
+          matches = [image for image in images if image["name"] == os.environ["OLD_NAME"]]
+          if len(matches) != 1:
+              raise SystemExit("expected exactly one DSA sysupgrade entry in profiles.json")
+          matches[0]["name"] = os.environ["NEW_NAME"]
+          path.write_text(json.dumps(data, separators=(",", ":")) + "\n")
+          PY
+
+          (
+            cd "$target_dir"
+            sha256sum config.buildinfo profiles.json *s20p*.bin \
+              packages/kmod-cfg80211_*.ipk \
+              packages/kmod-mac80211_*.ipk \
+              packages/kmod-mt76-core_*.ipk \
+              packages/kmod-mt76-connac_*.ipk \
+              packages/kmod-mt7915e_*.ipk \
+              packages/kmod-mt7986-firmware_*.ipk > sha256sums
+            sha256sum -c sha256sums
+          )
 
           find "$target_dir" -maxdepth 1 -type f \( -name '*nohs400*sysupgrade.bin' -o -name 'sha256sums' \) -printf '%p %s bytes\n' | sort
           test -f "$target_dir/$new_name"
